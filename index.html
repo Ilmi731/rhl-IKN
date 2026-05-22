@@ -422,7 +422,7 @@ main{max-width:1280px;margin:0 auto;padding:20px 16px 60px}
       <span class="hm-legend-item"><div class="hm-dot" style="background:#A8E3CD"></div>1-2 petak</span>
       <span class="hm-legend-item"><div class="hm-dot" style="background:#1D9E75"></div>3-5 petak</span>
       <span class="hm-legend-item"><div class="hm-dot" style="background:#1B3A2E"></div>6+ petak</span>
-      <span style="margin-left:auto;font-size:10px;color:var(--ink4)">Kolom=Bulan, Baris=Mg 1-4</span>
+      <span style="margin-left:auto;font-size:10px;color:var(--ink4)">Kolom=Bulan, Baris=Mg 1-5</span>
     </div>
   </div>
 
@@ -750,7 +750,7 @@ main{max-width:1280px;margin:0 auto;padding:20px 16px 60px}
       <span class="hm-legend-item"><div class="hm-dot" style="background:#A8E3CD"></div>1-2 petak</span>
       <span class="hm-legend-item"><div class="hm-dot" style="background:#1D9E75"></div>3-5 petak</span>
       <span class="hm-legend-item"><div class="hm-dot" style="background:#1B3A2E"></div>6+ petak</span>
-      <span style="margin-left:auto;font-size:10px;color:var(--ink4)">Kolom=Bulan, Baris=Mg 1-4</span>
+      <span style="margin-left:auto;font-size:10px;color:var(--ink4)">Kolom=Bulan, Baris=Mg 1-5</span>
     </div>
   </div>
 
@@ -960,6 +960,26 @@ function getFriday(b,m){
   if(d.getMonth()!==b){var last=new Date(yr,b+1,0);while(last.getDay()!==5)last.setDate(last.getDate()-1);return last;}
   return d;
 }
+// Hitung jumlah minggu (= jumlah Jumat) di bulan b
+function weeksInMonth(b){
+  var yr=new Date().getFullYear(),d=new Date(yr,b,1),count=0;
+  while(d.getMonth()===b){
+    if(d.getDay()===5)count++;
+    d.setDate(d.getDate()+1);
+  }
+  return count;
+}
+// Minggu keberapa di bulan ini berdasarkan tanggal hari ini
+function getCurrentWeekOfMonth(){
+  var t=new Date(),b=t.getMonth(),total=weeksInMonth(b);
+  // cari Jumat-Jumat di bulan ini, pilih yang paling dekat dengan hari ini
+  for(var m=1;m<=total;m++){
+    var fri=getFriday(b,m);
+    // batas akhir minggu = Jumat tsb. Jika hari ini <= Jumat itu, ini minggunya
+    if(t<=fri||m===total)return m;
+  }
+  return 1;
+}
 function fmtDate(d){return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0")}
 function fmtDateID(d){return d.getDate()+" "+MS[d.getMonth()]+" "+d.getFullYear()}
 function wkKey(b,m){return b+"-"+m}
@@ -967,7 +987,7 @@ function wkLabel(b,m){return "Minggu ke-"+m+" - "+MF[b]}
 function haNum(v){return Math.round(parseFloat(v)||0)}
 
 var now=new Date();
-var selBulan=now.getMonth(),selMinggu=1,activeBlok=1;
+var selBulan=now.getMonth(),selMinggu=getCurrentWeekOfMonth(),activeBlok=1;
 var state={entries:{}};
 var unlockedBloks=new Set();
 var manualLockedBloks=new Set(); // kunci manual per blok
@@ -1064,25 +1084,32 @@ function allPetak(){return BLOK_DATA.reduce(function(a,b){return a.concat(b.peta
 function getEntry(pid,wk){return ((state.entries[pid]||{})[wk])||{}}
 function setEntry(pid,wk,data){if(!state.entries[pid])state.entries[pid]={};state.entries[pid][wk]=data;persist();}
 
-// Ambil nilai TERBARU per kegiatan untuk petak
-// (nilai adalah realisasi kumulatif, bukan tambahan per minggu)
+// Ambil nilai KUMULATIF (dijumlahkan) per kegiatan untuk petak.
+// Setiap minggu menyimpan PROGRES TAMBAHAN, lalu dijumlahkan jadi total realisasi.
 function getPetakLatestEntry(pid){
   var e=state.entries[pid]||{};
   var keys=Object.keys(e);
-  if(keys.length===0)return {};
-  // Urutkan weekKey dari terbaru ke terlama
-  keys.sort(function(a,b){return wkToNum(b)-wkToNum(a)});
-  // Untuk setiap kegiatan, ambil nilai dari weekKey terbaru yang ada nilainya
   var result={jalur:0,sulam:0,siang:0,hama:0,pupuk:0,
               tglJalur:"",tglSulam:"",tglSiang:"",tglHama:"",tglPupuk:""};
+  if(keys.length===0)return result;
+  // urutkan kunci dari terbaru ke terlama (untuk ambil tanggal TERAKHIR)
+  keys.sort(function(a,b){return wkToNum(b)-wkToNum(a)});
   var kegs=["jalur","sulam","siang","hama","pupuk"];
   var tgls={jalur:"tglJalur",sulam:"tglSulam",siang:"tglSiang",hama:"tglHama",pupuk:"tglPupuk"};
+  // JUMLAHKAN semua minggu (akumulasi progres)
+  keys.forEach(function(k){
+    var row=e[k]||{};
+    kegs.forEach(function(keg){
+      var v=parseFloat(row[keg]||0);
+      if(v>0)result[keg]+=v;
+    });
+  });
+  // tanggal: ambil dari minggu terbaru yang ada nilainya untuk tiap kegiatan
   kegs.forEach(function(keg){
     for(var i=0;i<keys.length;i++){
-      var val=parseFloat((e[keys[i]]||{})[keg]||0);
-      if(val>0){
-        result[keg]=val;
-        result[tgls[keg]]=(e[keys[i]]||{})[tgls[keg]]||"";
+      var row=e[keys[i]]||{};
+      if(parseFloat(row[keg]||0)>0){
+        result[tgls[keg]]=row[tgls[keg]]||"";
         break;
       }
     }
@@ -1206,9 +1233,25 @@ function closeAdminModal(){document.getElementById("adminModal").classList.remov
 // ── SELECTOR INIT ─────────────────────────────────────────────────
 var bulanSel=document.getElementById("bulanSel");
 MF.forEach(function(m,i){var o=document.createElement("option");o.value=i;o.textContent=m;if(i===selBulan)o.selected=true;bulanSel.appendChild(o);});
-bulanSel.addEventListener("change",function(){selBulan=parseInt(bulanSel.value);updateWeekBadge();renderInput(activeBlok);});
+bulanSel.addEventListener("change",function(){
+  selBulan=parseInt(bulanSel.value);
+  populateWeekDropdown();
+  updateWeekBadge();
+  renderInput(activeBlok);
+});
 var weekSel=document.getElementById("weekSel");
-for(var wi=1;wi<=4;wi++){var wo=document.createElement("option");wo.value=wi;wo.textContent="Minggu ke-"+wi;if(wi===selMinggu)wo.selected=true;weekSel.appendChild(wo);}
+function populateWeekDropdown(){
+  weekSel.innerHTML="";
+  var total=weeksInMonth(selBulan);
+  if(selMinggu>total)selMinggu=total;
+  for(var wi=1;wi<=total;wi++){
+    var wo=document.createElement("option");
+    wo.value=wi;wo.textContent="Minggu ke-"+wi;
+    if(wi===selMinggu)wo.selected=true;
+    weekSel.appendChild(wo);
+  }
+}
+populateWeekDropdown();
 weekSel.addEventListener("change",function(){selMinggu=parseInt(weekSel.value);updateWeekBadge();renderInput(activeBlok);});
 document.getElementById("adminPinInput").addEventListener("keydown",function(e){if(e.key==="Enter")submitPin();});
 
@@ -1323,18 +1366,16 @@ function renderInput(blokId){
     var petakDone=isPetakDone(p.id,p.target);
     var forceEdit=unlocked; // reset per petak
 
-    // Carry-over: hanya jika minggu ini kosong DAN minggu ini lebih baru dari semua data DAN sudah done
+    // Input minggu ini SELALU kosong saat baru → angka di sini = progres tambahan minggu itu
     var hasThisWeek=Object.keys(e).length>0;
-    var isFuture=isAfterAllData(p.id);
-    var last=(!hasThisWeek&&isFuture&&petakDone)?getLastEntry(p.id):{};
-    var isCarryOver=Object.keys(last).length>0;
+    var isCarryOver=false; // dimatikan: mencegah double-count akumulasi
 
-    // Nilai: data minggu ini > carry-over > kosong
-    var vJalur=e.jalur||(isCarryOver?last.jalur:"")||"";
-    var vSulam=e.sulam||(isCarryOver?last.sulam:"")||"";
-    var vSiang=e.siang||(isCarryOver?last.siang:"")||"";
-    var vHama =e.hama ||(isCarryOver?last.hama :"")||"";
-    var vPupuk=e.pupuk||(isCarryOver?last.pupuk:"")||"";
+    // Nilai: hanya dari minggu ini (e), tidak ada carry-over
+    var vJalur=e.jalur||"";
+    var vSulam=e.sulam||"";
+    var vSiang=e.siang||"";
+    var vHama =e.hama ||"";
+    var vPupuk=e.pupuk||"";
 
     // Tanggal
     var tj=e.tglJalur||friStr,ts=e.tglSulam||friStr;
@@ -1371,8 +1412,14 @@ function renderInput(blokId){
     var allDone=kDone.jalur&&kDone.sulam&&kDone.siang&&kDone.hama&&kDone.pupuk;
     var chkDis=(locked&&!forceEdit)?' disabled="disabled"':'';
 
+    // Akumulasi total (s/d minggu yang dipilih)
+    var akumPct=Math.round((tot.jalur+tot.sulam+tot.siang+tot.hama+tot.pupuk)/(p.target*5)*100);
+    var akumInfo='<div style="font-size:9px;color:#666;margin-top:2px;font-family:DM Mono,monospace">'
+      +'J:'+haNum(tot.jalur)+'/S:'+haNum(tot.sulam)+'/Si:'+haNum(tot.siang)+'/H:'+haNum(tot.hama)+'/P:'+haNum(tot.pupuk)
+      +' • '+akumPct+'%</div>';
+
     tbody.innerHTML+="<tr id='row_"+p.id+"'>"
-      +'<td><div class="petak-name">'+nameLbl+carryBadge+'</div></td>'
+      +'<td><div class="petak-name">'+nameLbl+carryBadge+'</div>'+akumInfo+'</td>'
       +'<td><span class="mono">'+haNum(p.target)+' ha</span></td>'
       // JALUR
       +'<td><input class="inp inp-date" type="date" id="tglJ_'+p.id+'" value="'+tj+'" '+kDis('jalur')+'></td>'
@@ -1672,12 +1719,11 @@ function getKegLuas(keg,wkFilter){
     // Filter weekKeys kalau ada filter periode
     var fk=wkFilter?keys.filter(function(wk){return wkFilter.indexOf(wk)>=0}):keys;
     if(fk.length===0)return;
-    // Ambil nilai terbaru untuk kegiatan ini (bukan sum)
-    fk.sort(function(a,b){return wkToNum(b)-wkToNum(a)});
-    for(var i=0;i<fk.length;i++){
-      var val=parseFloat((e[fk[i]]||{})[keg]||0);
-      if(val>0){total+=val;break;}
-    }
+    // JUMLAHKAN semua minggu yang tersaring (akumulasi progres mingguan)
+    fk.forEach(function(wk){
+      var val=parseFloat((e[wk]||{})[keg]||0);
+      if(val>0)total+=val;
+    });
   });
   return total;
 }
@@ -1755,7 +1801,7 @@ function renderSumTable(){
     thead.innerHTML="<tr><th>Bulan</th><th>Jalur (ha)</th><th>Sulam (ha)</th><th>Siang (ha)</th><th>P. Hama (ha)</th><th>Pupuk (ha)</th><th>Bibit Sulam</th><th>Petak Aktif</th></tr>";
     tbody.innerHTML="";
     for(var b=0;b<12;b++){
-      var wkKeys=[];for(var m=1;m<=4;m++)wkKeys.push(wkKey(b,m));
+      var wkKeys=[];for(var m=1;m<=weeksInMonth(b);m++)wkKeys.push(wkKey(b,m));
       var hasData=allP.some(function(p){return wkKeys.some(function(wk){var d=(state.entries[p.id]||{})[wk];return d&&Object.values(d).some(function(v){return parseFloat(v)>0;});});});
       if(!hasData)continue;
       var vals=kegs.map(function(k){return haNum(getKegLuas(k,wkKeys))});
@@ -1768,7 +1814,7 @@ function renderSumTable(){
     if(sub)sub.textContent="Realisasi luas (ha) per kegiatan per minggu";
     thead.innerHTML="<tr><th>Minggu</th><th>Jumat</th><th>Jalur (ha)</th><th>Sulam (ha)</th><th>Siang (ha)</th><th>P. Hama (ha)</th><th>Pupuk (ha)</th><th>Bibit Sulam</th><th>Petak Aktif</th></tr>";
     tbody.innerHTML="";
-    for(var mi=1;mi<=4;mi++){
+    for(var mi=1;mi<=weeksInMonth(selBulan);mi++){
       var wk=wkKey(selBulan,mi);
       var fri=getFriday(selBulan,mi);
       var vals=kegs.map(function(k){return haNum(getKegLuas(k,[wk]))});
@@ -1811,7 +1857,7 @@ function renderDashboard(){
   var allP=allPetak();
   var allWk=new Set();
   allP.forEach(function(p){Object.keys(state.entries[p.id]||{}).forEach(function(w){allWk.add(w)})});
-  for(var mi=1;mi<=4;mi++)allWk.add(wkKey(selBulan,mi));
+  for(var mi=1;mi<=weeksInMonth(selBulan);mi++)allWk.add(wkKey(selBulan,mi));
   var sortedWk=[...allWk].sort(function(a,b){return wkToNum(a)-wkToNum(b)});
   var uniqWk=[...new Set(sortedWk)];
   var wkCounts=uniqWk.map(function(wk){return allP.filter(function(p){var e=(state.entries[p.id]||{})[wk];return e&&parseFloat(e.jalur||0)>0}).length;});
@@ -1862,7 +1908,7 @@ function renderDashboard(){
   var hmG=document.getElementById("hmGrid");hmG.innerHTML="";
   for(var bi=0;bi<12;bi++){
     var col=document.createElement("div");col.className="hm-col";
-    for(var mgi=1;mgi<=4;mgi++){
+    for(var mgi=1;mgi<=weeksInMonth(bi);mgi++){
       var wk=wkKey(bi,mgi);
       var cnt=allP.filter(function(p){var e=(state.entries[p.id]||{})[wk];return e&&parseFloat(e.jalur||0)>0}).length;
       var cell=document.createElement("div");cell.className="hm-cell";
@@ -2269,7 +2315,7 @@ function exportPDF(){
   // Kumpulkan weekKey yang ada
   var allWkSet=new Set();
   allPetak().forEach(function(p){Object.keys(state.entries[p.id]||{}).forEach(function(w){allWkSet.add(w);});});
-  for(var mi=1;mi<=4;mi++) allWkSet.add(wkKey(d.bulanIdx,mi));
+  for(var mi=1;mi<=weeksInMonth(d.bulanIdx);mi++) allWkSet.add(wkKey(d.bulanIdx,mi));
   var wkList=[...allWkSet].sort(function(a,b){
     var pa=a.split("-").map(Number),pb=b.split("-").map(Number);
     return pa[0]!==pb[0]?pa[0]-pb[0]:pa[1]-pb[1];
