@@ -922,7 +922,7 @@ main{max-width:1280px;margin:0 auto;padding:20px 16px 60px}
 
 <script>
 // === GANTI URL DI BAWAH INI dengan URL Web App Google Apps Script Anda ===
-const API_URL="https://script.google.com/macros/s/AKfycbzHvIqGNJYtyTFZ_79PRALBl5TaA3XiiLTqh2fkxmhs3S9vsrVtWDnRbd6ikmW4m-Sa/exec";
+const API_URL="GANTI_DENGAN_URL_APPS_SCRIPT_ANDA";
 const ADMIN_PIN="rhl2025manubar"; // Ganti PIN di sini
 
 const BLOK_DATA=[
@@ -996,12 +996,19 @@ async function fetchFromSheets(){
   try{
     var res=await fetch(API_URL+"?t="+Date.now());
     var json=await res.json();
+    console.log("[RHL DEBUG] Response dari Sheets:",json);
+    window._lastSheetData=json; // simpan untuk debug
     if(json.status==="ok"){
-      if(json.data.length>0){
+      if(json.data&&json.data.length>0){
         state.entries={};
+        var validCount=0,invalidCount=0;
+        var validPetakIds=new Set();
+        BLOK_DATA.forEach(function(b){b.petak.forEach(function(p){validPetakIds.add(p.id);});});
+        console.log("[RHL DEBUG] Valid petakId list:",[...validPetakIds]);
         json.data.forEach(function(r){
-          var pid=r.petakId,wk=r.weekKey;
-          if(!pid||!wk)return;
+          var pid=String(r.petakId||"").trim(),wk=String(r.weekKey||"").trim();
+          if(!pid||!wk){invalidCount++;console.warn("[RHL DEBUG] Skip baris (pid/wk kosong):",r);return;}
+          if(!validPetakIds.has(pid)){invalidCount++;console.warn("[RHL DEBUG] Skip baris (petakId tidak ada di BLOK_DATA):",pid,r);return;}
           if(!state.entries[pid])state.entries[pid]={};
           state.entries[pid][wk]={
             tglJalur:r.tglJalur||"",jalur:r.jalur||"",
@@ -1010,17 +1017,23 @@ async function fetchFromSheets(){
             tglHama:r.tglHama||"",hama:r.hama||"",
             tglPupuk:r.tglPupuk||"",pupuk:r.pupuk||""
           };
+          validCount++;
         });
+        console.log("[RHL DEBUG] Berhasil parse:",validCount,"baris. Skipped:",invalidCount);
+        console.log("[RHL DEBUG] state.entries:",state.entries);
         persist();
-        setSyncStatus("ok",json.data.length+" entri");
+        setSyncStatus("ok",validCount+" entri"+(invalidCount>0?" ("+invalidCount+" skip)":""));
       } else {
         loadCache();
         setSyncStatus("offline","Sheet kosong - cache lokal");
       }
       renderDashboard(); renderBlokList();
       if(document.getElementById("view-input").classList.contains("active")) renderInput(activeBlok);
+    } else {
+      console.error("[RHL DEBUG] Status bukan ok:",json);
+      setSyncStatus("error","Server error");
     }
-  }catch(e){loadCache();setSyncStatus("offline","Offline - cache lokal");}
+  }catch(e){console.error("[RHL DEBUG] Fetch error:",e);loadCache();setSyncStatus("offline","Offline - cache lokal");}
 }
 
 // Push SATU petak ke server
