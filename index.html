@@ -1016,67 +1016,98 @@ async function fetchFromSheets(){
   try{
     var res=await fetch(API_URL+"?action=fetch&t="+Date.now());
     var json=await res.json();
-    console.log("[RHL DEBUG] Response dari Sheets:",json);
-    window._lastSheetData=json; // simpan untuk debug
+    console.log("[RDAS DEBUG] Response:",json);
+    window._lastSheetData=json;
     if(json.status==="ok"){
       if(json.data&&json.data.length>0){
         state.entries={};
-        var validCount=0,invalidCount=0;
         var validPetakIds=new Set();
         BLOK_DATA.forEach(function(b){b.petak.forEach(function(p){validPetakIds.add(p.id);});});
-        console.log("[RHL DEBUG] Valid petakId list:",[...validPetakIds]);
+        var tglMap={jalur:"tglJalur",sulam:"tglSulam",siang:"tglSiang",hama:"tglHama",pupuk:"tglPupuk"};
+        var validCount=0,invalidCount=0;
+        // Format baru: setiap entry = {petakId, weekKey, kegiatan, luas, tgl}
         json.data.forEach(function(r){
-          var pid=String(r.petakId||"").trim(),wk=String(r.weekKey||"").trim();
-          if(!pid||!wk){invalidCount++;console.warn("[RHL DEBUG] Skip baris (pid/wk kosong):",r);return;}
-          if(!validPetakIds.has(pid)){invalidCount++;console.warn("[RHL DEBUG] Skip baris (petakId tidak ada di BLOK_DATA):",pid,r);return;}
+          var pid=String(r.petakId||"").trim();
+          var wk=String(r.weekKey||"").trim();
+          var keg=String(r.kegiatan||"").trim();
+          if(!pid||!wk||!keg){invalidCount++;return;}
+          if(!validPetakIds.has(pid)){invalidCount++;return;}
+          if(!tglMap[keg]){invalidCount++;return;}
           if(!state.entries[pid])state.entries[pid]={};
-          state.entries[pid][wk]={
-            tglJalur:r.tglJalur||"",jalur:r.jalur||"",
-            tglSulam:r.tglSulam||"",sulam:r.sulam||"",
-            tglSiang:r.tglSiang||"",siang:r.siang||"",
-            tglHama:r.tglHama||"",hama:r.hama||"",
-            tglPupuk:r.tglPupuk||"",pupuk:r.pupuk||""
-          };
+          if(!state.entries[pid][wk])state.entries[pid][wk]={};
+          // Set nilai kegiatan dan tanggalnya
+          state.entries[pid][wk][keg]=String(r.luas||"");
+          state.entries[pid][wk][tglMap[keg]]=String(r.tgl||"");
           validCount++;
         });
-        console.log("[RHL DEBUG] Berhasil parse:",validCount,"baris. Skipped:",invalidCount);
-        console.log("[RHL DEBUG] state.entries:",state.entries);
+        console.log("[RDAS DEBUG] Parsed:",validCount,"valid,",invalidCount,"skip");
         persist();
         setSyncStatus("ok",validCount+" entri"+(invalidCount>0?" ("+invalidCount+" skip)":""));
       } else {
         loadCache();
-        setSyncStatus("offline","Sheet kosong - cache lokal");
+        setSyncStatus("ok","Sheet kosong");
       }
       renderDashboard(); renderBlokList();
       if(document.getElementById("view-input").classList.contains("active")) renderInput(activeBlok);
     } else {
-      console.error("[RHL DEBUG] Status bukan ok:",json);
+      console.error("[RDAS DEBUG] Status bukan ok:",json);
       setSyncStatus("error","Server error");
     }
-  }catch(e){console.error("[RHL DEBUG] Fetch error:",e);loadCache();setSyncStatus("offline","Offline - cache lokal");}
+  }catch(e){console.error("[RDAS DEBUG] Fetch error:",e);loadCache();setSyncStatus("offline","Offline - cache lokal");}
 }
 
-// Push SATU petak ke server
-function pushOneToSheets(petakId,wk,entry){
+// Kirim SATU kegiatan (1 cell di sheet baru)
+function pushOneKegiatan(petakId,kegKey,tgl,luas){
   var params=new URLSearchParams({
-    action:"save",petakId:petakId,weekKey:wk,
-    tglJalur:entry.tglJalur||"",jalur:entry.jalur||"",
-    tglSulam:entry.tglSulam||"",sulam:entry.sulam||"",
-    tglSiang:entry.tglSiang||"",siang:entry.siang||"",
-    tglHama:entry.tglHama||"",hama:entry.hama||"",
-    tglPupuk:entry.tglPupuk||"",pupuk:entry.pupuk||""
+    action:"save",
+    petakId:petakId,
+    kegiatan:kegKey,
+    tgl:tgl||"",
+    luas:String(luas||0)
   });
   return fetch(API_URL+"?"+params.toString())
     .then(function(r){return r.json();})
-    .catch(function(){return {status:"error"};});
+    .catch(function(){return {status:"error",message:"network"};});
 }
 
-// Push semua petak PARALLEL (tidak satu per satu)
+// Push 1 entri (semua kegiatan untuk 1 petak+minggu) ke sheet baru
+async function pushOneToSheets(petakId,wk,entry){
+  var keg=[
+    {k:"jalur",tgl:entry.tglJalur,luas:entry.jalur},
+    {k:"sulam",tgl:entry.tglSulam,luas:entry.sulam},
+    {k:"siang",tgl:entry.tglSiang,luas:entry.siang},
+    {k:"hama", tgl:entry.tglHama, luas:entry.hama},
+    {k:"pupuk",tgl:entry.tglPupuk,luas:entry.pupuk}
+  ];
+  // Hanya kirim kegiatan yang punya luas > 0
+  var promises=keg.filter(function(x){return parseFloat(x.luas)>0;})
+                  .map(function(x){return pushOneKegiatan(petakId,x.k,x.tgl,x.luas);});
+  if(promises.length===0)return {status:"saved",empty:true};
+  var results=await Promise.all(promises);
+  // Cek apakah ada yang error karena melebihi target
+  var errors=results.filter(function(r){return r.status==="error";});
+  if(errors.length>0){
+    return {status:"error",errors:errors,message:errors.map(function(e){return e.message||"error";}).join("; ")};
+  }
+  return {status:"saved",results:results};
+}
+
+// Push ke server + tampilkan status
 async function pushToSheets(petakId,wk,entry){
   setSyncStatus("saving","Menyimpan...");
   var result=await pushOneToSheets(petakId,wk,entry);
-  if(result.status==="saved"){setSyncStatus("ok","Tersimpan");}
-  else{setSyncStatus("offline","Tersimpan lokal");}
+  if(result.status==="saved"){
+    setSyncStatus("ok","Tersimpan");
+  } else if(result.status==="error"){
+    setSyncStatus("error","! "+(result.message||"Gagal"));
+    // Tampilkan alert kalau melebihi target
+    if(result.errors&&result.errors.length>0){
+      var msgs=result.errors.map(function(e){return e.message||"";}).filter(Boolean);
+      if(msgs.length>0)alert("Tidak bisa disimpan:\n\n"+msgs.join("\n\n"));
+    }
+  } else {
+    setSyncStatus("offline","Tersimpan lokal");
+  }
 }
 
 // ── HELPERS ───────────────────────────────────────────────────────
@@ -1418,29 +1449,45 @@ function renderInput(blokId){
       +'J:'+haNum(tot.jalur)+'/S:'+haNum(tot.sulam)+'/Si:'+haNum(tot.siang)+'/H:'+haNum(tot.hama)+'/P:'+haNum(tot.pupuk)
       +' • '+akumPct+'%</div>';
 
+    // Sisa kapasitas per kegiatan = target - (akumulasi MINGGU LAIN, kecuali minggu ini)
+    // Ini cap maksimum yg boleh diisi minggu ini
+    function getSisa(keg){
+      var sumOther=0;
+      var allEntries=state.entries[p.id]||{};
+      Object.keys(allEntries).forEach(function(k){
+        if(k===wkKey(selBulan,selMinggu))return; // skip minggu ini
+        var val=parseFloat((allEntries[k]||{})[keg]||0);
+        if(val>0)sumOther+=val;
+      });
+      return Math.max(0,p.target-sumOther);
+    }
+    var maxJ=getSisa("jalur").toFixed(2),maxS=getSisa("sulam").toFixed(2);
+    var maxSi=getSisa("siang").toFixed(2),maxH=getSisa("hama").toFixed(2);
+    var maxP=getSisa("pupuk").toFixed(2);
+
     tbody.innerHTML+="<tr id='row_"+p.id+"'>"
       +'<td><div class="petak-name">'+nameLbl+carryBadge+'</div>'+akumInfo+'</td>'
       +'<td><span class="mono">'+haNum(p.target)+' ha</span></td>'
       // JALUR
       +'<td><input class="inp inp-date" type="date" id="tglJ_'+p.id+'" value="'+tj+'" '+kDis('jalur')+'></td>'
-      +'<td style="white-space:nowrap"><input'+kClass('jalur')+' type="number" step="0.1" min="0" id="jalur_'+p.id+'" value="'+vJalur+'" '+kDis('jalur')+onchange+' placeholder="0">'
-      +'<input type="checkbox" class="chk-keg chk-keg-item" id="chkJ_'+p.id+'" data-pid="'+p.id+'" data-keg="jalur" data-tgt="'+p.target+'" '+kChecked('jalur')+' '+chkDis+' title="Isi jalur = target"></td>'
+      +'<td style="white-space:nowrap"><input'+kClass('jalur')+' type="number" step="0.1" min="0" max="'+maxJ+'" id="jalur_'+p.id+'" value="'+vJalur+'" '+kDis('jalur')+onchange+' placeholder="max '+maxJ+'" title="Sisa: '+maxJ+' ha">'
+      +'<input type="checkbox" class="chk-keg chk-keg-item" id="chkJ_'+p.id+'" data-pid="'+p.id+'" data-keg="jalur" data-tgt="'+maxJ+'" '+kChecked('jalur')+' '+chkDis+' title="Isi jalur = sisa target"></td>'
       // SULAM
       +'<td><input class="inp inp-date" type="date" id="tglS_'+p.id+'" value="'+ts+'" '+kDis('sulam')+'></td>'
-      +'<td style="white-space:nowrap"><input'+kClass('sulam')+' type="number" step="0.1" min="0" id="sulam_'+p.id+'" value="'+vSulam+'" '+kDis('sulam')+onchange+' placeholder="0">'
-      +'<input type="checkbox" class="chk-keg chk-keg-item" id="chkS_'+p.id+'" data-pid="'+p.id+'" data-keg="sulam" data-tgt="'+p.target+'" '+kChecked('sulam')+' '+chkDis+' title="Isi sulam = target"></td>'
+      +'<td style="white-space:nowrap"><input'+kClass('sulam')+' type="number" step="0.1" min="0" max="'+maxS+'" id="sulam_'+p.id+'" value="'+vSulam+'" '+kDis('sulam')+onchange+' placeholder="max '+maxS+'" title="Sisa: '+maxS+' ha">'
+      +'<input type="checkbox" class="chk-keg chk-keg-item" id="chkS_'+p.id+'" data-pid="'+p.id+'" data-keg="sulam" data-tgt="'+maxS+'" '+kChecked('sulam')+' '+chkDis+' title="Isi sulam = sisa target"></td>'
       // SIANG
       +'<td><input class="inp inp-date" type="date" id="tglSi_'+p.id+'" value="'+tsi+'" '+kDis('siang')+'></td>'
-      +'<td style="white-space:nowrap"><input'+kClass('siang')+' type="number" step="0.1" min="0" id="siang_'+p.id+'" value="'+vSiang+'" '+kDis('siang')+onchange+' placeholder="0">'
-      +'<input type="checkbox" class="chk-keg chk-keg-item" id="chkSi_'+p.id+'" data-pid="'+p.id+'" data-keg="siang" data-tgt="'+p.target+'" '+kChecked('siang')+' '+chkDis+' title="Isi siang = target"></td>'
+      +'<td style="white-space:nowrap"><input'+kClass('siang')+' type="number" step="0.1" min="0" max="'+maxSi+'" id="siang_'+p.id+'" value="'+vSiang+'" '+kDis('siang')+onchange+' placeholder="max '+maxSi+'" title="Sisa: '+maxSi+' ha">'
+      +'<input type="checkbox" class="chk-keg chk-keg-item" id="chkSi_'+p.id+'" data-pid="'+p.id+'" data-keg="siang" data-tgt="'+maxSi+'" '+kChecked('siang')+' '+chkDis+' title="Isi siang = sisa target"></td>'
       // HAMA
       +'<td><input class="inp inp-date" type="date" id="tglH_'+p.id+'" value="'+th+'" '+kDis('hama')+'></td>'
-      +'<td style="white-space:nowrap"><input'+kClass('hama')+' type="number" step="0.1" min="0" id="hama_'+p.id+'" value="'+vHama+'" '+kDis('hama')+onchange+' placeholder="0">'
-      +'<input type="checkbox" class="chk-keg chk-keg-item" id="chkH_'+p.id+'" data-pid="'+p.id+'" data-keg="hama" data-tgt="'+p.target+'" '+kChecked('hama')+' '+chkDis+' title="Isi hama = target"></td>'
+      +'<td style="white-space:nowrap"><input'+kClass('hama')+' type="number" step="0.1" min="0" max="'+maxH+'" id="hama_'+p.id+'" value="'+vHama+'" '+kDis('hama')+onchange+' placeholder="max '+maxH+'" title="Sisa: '+maxH+' ha">'
+      +'<input type="checkbox" class="chk-keg chk-keg-item" id="chkH_'+p.id+'" data-pid="'+p.id+'" data-keg="hama" data-tgt="'+maxH+'" '+kChecked('hama')+' '+chkDis+' title="Isi hama = sisa target"></td>'
       // PUPUK
       +'<td><input class="inp inp-date" type="date" id="tglP_'+p.id+'" value="'+tp+'" '+kDis('pupuk')+'></td>'
-      +'<td style="white-space:nowrap"><input'+kClass('pupuk')+' type="number" step="0.1" min="0" id="pupuk_'+p.id+'" value="'+vPupuk+'" '+kDis('pupuk')+onchange+' placeholder="0">'
-      +'<input type="checkbox" class="chk-keg chk-keg-item" id="chkP_'+p.id+'" data-pid="'+p.id+'" data-keg="pupuk" data-tgt="'+p.target+'" '+kChecked('pupuk')+' '+chkDis+' title="Isi pupuk = target"></td>'
+      +'<td style="white-space:nowrap"><input'+kClass('pupuk')+' type="number" step="0.1" min="0" max="'+maxP+'" id="pupuk_'+p.id+'" value="'+vPupuk+'" '+kDis('pupuk')+onchange+' placeholder="max '+maxP+'" title="Sisa: '+maxP+' ha">'
+      +'<input type="checkbox" class="chk-keg chk-keg-item" id="chkP_'+p.id+'" data-pid="'+p.id+'" data-keg="pupuk" data-tgt="'+maxP+'" '+kChecked('pupuk')+' '+chkDis+' title="Isi pupuk = sisa target"></td>'
       // CENTANG SEMUA petak
       +'<td style="text-align:center"><input type="checkbox" class="chk-keg chk-all-petak" id="chkAll_'+p.id+'" data-pid="'+p.id+'" data-tgt="'+p.target+'" '+(allDone?'checked':'')+' '+chkDis+' title="Isi semua kegiatan = target"></td>'
       +"</tr>";
